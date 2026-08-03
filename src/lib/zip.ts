@@ -1,5 +1,5 @@
 // ZIP archive generation for bulk downloads
-import archiver from "archiver";
+import * as archiver from "archiver";
 import { Writable } from "stream";
 
 export interface ZipFile {
@@ -16,7 +16,10 @@ export async function createZipBuffer(files: ZipFile[]): Promise<Buffer> {
         cb();
       },
     });
-    const archive = archiver("zip", { zlib: { level: 6 } });
+    // archiver is a factory function (no default export — use named call)
+    const archive = (archiver as any).default
+      ? (archiver as any).default("zip", { zlib: { level: 6 } })
+      : (archiver as any)("zip", { zlib: { level: 6 } });
     archive.on("error", reject);
     writable.on("finish", () => resolve(Buffer.concat(chunks)));
     archive.pipe(writable);
