@@ -1,0 +1,176 @@
+// Prisma schema — YouTube Transcription & Formatting Platform
+// Dev (sandbox): SQLite | Prod (Coolify): PostgreSQL (see schema.postgres.prisma)
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ===== Videos =====
+model Video {
+  id            String   @id @default(cuid())
+  youtubeId     String
+  url           String
+  title         String
+  thumbnail     String?
+  duration      Int?     // seconds
+  playlistId    String?  // relation to Playlist
+  playlist      Playlist? @relation(fields: [playlistId], references: [id], onDelete: SetNull)
+
+  // Transcription state
+  status        String   @default("pending") // pending | downloading | uploading | transcribing | completed | failed
+  progress      Int      @default(0) // 0-100
+  statusText    String?  // human readable status (English for logs)
+
+  // Audio file
+  audioPath     String?
+  audioBitrate  Int?     // kbps
+  audioChannels String?  // mono | stereo
+
+  // Transcript
+  transcriptText String?
+  transcriptJson String? // full Deepgram response
+
+  // Worker tracking
+  workerId      String?
+  attempts      Int      @default(0)
+  maxAttempts   Int      @default(3)
+  cookieUsed    String?  // which cookie file worked
+  deepgramKey   Int?     // which worker/key index (1-5)
+  error         String? 
+
+  startedAt     DateTime?
+  completedAt   DateTime?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  formatJobs    FormatJob[]
+
+  @@index([status])
+  @@index([playlistId])
+}
+
+// ===== Playlists =====
+model Playlist {
+  id          String   @id @default(cuid())
+  url         String
+  title       String?
+  videoCount  Int      @default(0)
+  status      String   @default("pending") // pending | fetching | queued | completed | failed
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  videos      Video[]
+}
+
+// ===== Format Jobs (Formatting / OpenCode) =====
+model FormatJob {
+  id            String   @id @default(cuid())
+  videoId       String
+  video         Video    @relation(fields: [videoId], references: [id], onDelete: Cascade)
+
+  skillId       String
+  skillName     String   // snapshot of skill name at creation
+  modelProvider String   // openrouter | openai | codex | deepseek
+  modelName     String   // specific model id
+
+  status        String   @default("pending") // pending | processing | completed | failed
+  progress      Int      @default(0)
+  statusText    String?
+
+  inputPath     String?  // path to txt file fed to opencode
+  outputPath    String?  // path to generated docx
+  error         String? 
+
+  workerId      String?
+  attempts      Int      @default(0)
+
+  startedAt     DateTime?
+  completedAt   DateTime?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([status])
+  @@index([videoId])
+}
+
+// ===== Skills (formatting skills from Git) =====
+model Skill {
+  id                  String   @id @default(cuid())
+  name                String   @unique // display name
+  gitRepo             String   // git clone url
+  branch              String   @default("main")
+  localPath           String?  // where it's cloned in the shared volume
+  description         String? 
+  defaultModelProvider String? // openrouter | openai | codex | deepseek
+  defaultModelName    String?
+  clonedAt            DateTime?
+  isActive            Boolean  @default(true)
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+}
+
+// ===== Cookies (YouTube) =====
+model Cookie {
+  id        String   @id @default(cuid())
+  filename  String
+  content   String   // Netscape cookies.txt content
+  order     Int      @default(0) // fallback order (0 = first)
+  isActive  Boolean  @default(true)
+  lastUsedAt DateTime?
+  lastError  String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// ===== Settings (key-value global) =====
+model Setting {
+  id    String @id @default(cuid())
+  key   String @unique
+  value String
+}
+
+// ===== Logs =====
+model LogEntry {
+  id        String   @id @default(cuid())
+  level     String   @default("info") // info | warn | error | debug
+  source    String   @default("system") // system | transcription | formatting | auth | api | worker
+  message   String  
+  details   String?  // JSON string of extra context
+  videoId   String?
+  jobId     String?
+  workerId  String?
+  createdAt DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([source])
+  @@index([level])
+}
+
+// ===== Worker Status =====
+model WorkerStatus {
+  id            String   @id @default(cuid())
+  workerId      String   @unique // e.g. transcribe-1, opencode-1
+  type          String   // transcribe | format
+  status        String   @default("idle") // active | idle | disabled | error
+  enabled       Boolean  @default(true) // controlled from UI
+  currentJobId  String?
+  currentVideoId String?
+  lastHeartbeat DateTime?
+  lastError     String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+}
+
+// ===== AI Providers (API keys stored in DB) =====
+model AIProvider {
+  id        String   @id @default(cuid())
+  provider  String   @unique // openrouter | openai | deepseek
+  apiKey    String  
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}

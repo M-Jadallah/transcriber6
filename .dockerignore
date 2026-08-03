@@ -1,0 +1,84 @@
+# =============================================================================
+# .dockerignore — exclude from Docker build context (smaller, faster builds)
+# =============================================================================
+# Lines here are matched against the build context (repo root) and excluded
+# from the tarball sent to the Docker daemon. This keeps the build context
+# small (especially important for Coolify, which sends the context over SSH).
+# =============================================================================
+
+# ─── Dependencies (will be re-installed in the Dockerfile) ────────────────────
+node_modules
+**/node_modules
+
+# ─── Build artifacts (regenerated in Docker builder stage) ────────────────────
+.next
+out
+build
+dist
+**/.tsbuildinfo
+*.tsbuildinfo
+tsconfig.tsbuildinfo
+
+# ─── Version control ──────────────────────────────────────────────────────────
+.git
+.gitignore
+.gitattributes
+.github
+.gitlab-ci.yml
+
+# ─── Logs ─────────────────────────────────────────────────────────────────────
+*.log
+dev.log
+dev.out.log
+server.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# ─── Environment files (Coolify injects env at runtime) ───────────────────────
+.env
+.env.*
+!.env.example
+
+# ─── Local databases (sandbox dev only) ──────────────────────────────────────
+db/
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+
+# ─── Example skills directory (huge — 100+ example skills in the repo) ────────
+skills/
+
+# ─── Agent / sandbox working dirs (not part of the app) ───────────────────────
+agent-ctx/
+tool-results/
+tests/
+
+# ─── Download / upload temp dirs (dev sandbox) ────────────────────────────────
+download/
+upload/
+
+# ─── IDE / editor ─────────────────────────────────────────────────────────────
+.vscode
+.idea
+*.swp
+*.swo
+*~
+
+# ─── OS junk ──────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+
+# ─── Misc project files not needed in the image ───────────────────────────────
+README.md
+DEPLOYMENT.md
+worklog.md
+.claude
+.z-ai-config
+Caddyfile
+vercel.json
+.next/cache
+examples/
+public/examples

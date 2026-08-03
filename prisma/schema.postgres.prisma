@@ -1,0 +1,163 @@
+// Production schema for Coolify (PostgreSQL)
+// Copied into the Docker image as the active schema during build.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Video {
+  id            String   @id @default(cuid())
+  youtubeId     String
+  url           String
+  title         String
+  thumbnail     String?
+  duration      Int?
+  playlistId    String?
+  playlist      Playlist? @relation(fields: [playlistId], references: [id], onDelete: SetNull)
+
+  status        String   @default("pending")
+  progress      Int      @default(0)
+  statusText    String?
+
+  audioPath     String?
+  audioBitrate  Int?
+  audioChannels String?
+
+  transcriptText String?
+  transcriptJson String? @db.Text
+
+  workerId      String?
+  attempts      Int      @default(0)
+  maxAttempts   Int      @default(3)
+  cookieUsed    String?
+  deepgramKey   Int?
+  error         String?  @db.Text
+
+  startedAt     DateTime?
+  completedAt   DateTime?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  formatJobs    FormatJob[]
+
+  @@index([status])
+  @@index([playlistId])
+}
+
+model Playlist {
+  id          String   @id @default(cuid())
+  url         String
+  title       String?
+  videoCount  Int      @default(0)
+  status      String   @default("pending")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  videos      Video[]
+}
+
+model FormatJob {
+  id            String   @id @default(cuid())
+  videoId       String
+  video         Video    @relation(fields: [videoId], references: [id], onDelete: Cascade)
+
+  skillId       String
+  skillName     String
+  modelProvider String
+  modelName     String
+
+  status        String   @default("pending")
+  progress      Int      @default(0)
+  statusText    String?
+
+  inputPath     String?
+  outputPath    String?
+  error         String?  @db.Text
+
+  workerId      String?
+  attempts      Int      @default(0)
+
+  startedAt     DateTime?
+  completedAt   DateTime?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([status])
+  @@index([videoId])
+}
+
+model Skill {
+  id                  String   @id @default(cuid())
+  name                String   @unique
+  gitRepo             String
+  branch              String   @default("main")
+  localPath           String?
+  description         String?  @db.Text
+  defaultModelProvider String?
+  defaultModelName    String?
+  clonedAt            DateTime?
+  isActive            Boolean  @default(true)
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+}
+
+model Cookie {
+  id        String   @id @default(cuid())
+  filename  String
+  content   String   @db.Text
+  order     Int      @default(0)
+  isActive  Boolean  @default(true)
+  lastUsedAt DateTime?
+  lastError  String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Setting {
+  id    String @id @default(cuid())
+  key   String @unique
+  value String @db.Text
+}
+
+model LogEntry {
+  id        String   @id @default(cuid())
+  level     String   @default("info")
+  source    String   @default("system")
+  message   String   @db.Text
+  details   String?  @db.Text
+  videoId   String?
+  jobId     String?
+  workerId  String?
+  createdAt DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([source])
+  @@index([level])
+}
+
+model WorkerStatus {
+  id            String   @id @default(cuid())
+  workerId      String   @unique
+  type          String
+  status        String   @default("idle")
+  enabled       Boolean  @default(true)
+  currentJobId  String?
+  currentVideoId String?
+  lastHeartbeat DateTime?
+  lastError     String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+}
+
+model AIProvider {
+  id        String   @id @default(cuid())
+  provider  String   @unique
+  apiKey    String   @db.Text
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}

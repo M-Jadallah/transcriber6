@@ -1,0 +1,79 @@
+# syntax=docker/dockerfile:1
+# =============================================================================
+# Dockerfile.opencode — OpenCode formatting workers (2 containers: opencode-1, opencode-2)
+# =============================================================================
+# Reuses the same source tree + node_modules as the app image (so it can import
+# from @/lib/* and run workers/format.ts via bun). Does NOT need the Next.js
+# standalone build.
+#
+# Entrypoint: opencode-entrypoint.sh → writes OPENCODE_AUTH_JSON to
+#             /root/.local/share/opencode/auth.json, then exec's CMD.
+# CMD:        ["bun", "workers/format.ts"]
+# =============================================================================
+
+# ─── Stage 1: deps (same as app) ──────────────────────────────────────────────
+FROM node:22-slim AS deps
+WORKDIR /app
+RUN npm install -g bun
+COPY package.json bun.lock package-lock.json* ./
+
+# Install deps with retry logic (same as app Dockerfile).
+# Prefer npm ci (stable with native binaries like @swc/core).
+RUN npm ci --no-audit --no-fund 2>&1 \
+    || (echo "[deps] npm ci failed, trying bun install --frozen-lockfile..." \
+        && bun install --frozen-lockfile 2>&1) \
+    || (echo "[deps] bun frozen failed, trying bun install..." \
+        && bun install 2>&1) \
+    || (echo "[deps] bun install failed, trying npm install..." \
+        && npm install --no-audit --no-fund 2>&1)
+
+# ─── Stage 2: builder (prisma generate only — no Next.js build) ───────────────
+FROM node:22-slim AS builder
+WORKDIR /app
+RUN npm install -g bun
+ENV DATABASE_URL="postgresql://placeholder:placeholder@localhost:5432/placeholder"
+COPY --from=deps /app/node_modules ./node_modules
+COPY . .
+RUN npx prisma generate --schema=prisma/schema.postgres.prisma
+
+# ─── Stage 3: runtime ─────────────────────────────────────────────────────────
+FROM node:22-slim AS runtime
+WORKDIR /app
+
+ENV NODE_ENV=production
+ENV BUN_IGNORE_SCRIPTS=true
+
+# System deps:
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      git \
+      curl \
+      ca-certificates \
+      python3 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install bun (worker runs via `bun workers/format.ts`)
+RUN npm install -g bun
+
+# Install OpenCode CLI globally (latest stable)
+RUN npm install -g opencode-ai@latest
+
+# Create opencode data directories (workers write skill repos + job artifacts here)
+RUN mkdir -p /data/skills /data/jobs /root/.local/share/opencode
+
+# Copy full node_modules (includes @prisma/client, bullmq, ioredis, docx, archiver)
+COPY --from=builder /app/node_modules ./node_modules
+# Copy source (workers + src/lib + prisma + tsconfig)
+COPY --from=builder /app/workers ./workers
+COPY --from=builder /app/src ./src
+COPY --from=builder /app/prisma ./prisma
+COPY --from=builder /app/package.json ./package.json
+COPY --from=builder /app/tsconfig.json ./tsconfig.json
+
+# Copy entrypoint (chmod 0755)
+COPY --chmod=0755 opencode-entrypoint.sh ./opencode-entrypoint.sh
+
+# Entrypoint writes OPENCODE_AUTH_JSON env → /root/.local/share/opencode/auth.json
+ENTRYPOINT ["./opencode-entrypoint.sh"]
+
+# Default CMD — overridden by `command:` in compose if needed.
+CMD ["bun", "workers/format.ts"]
