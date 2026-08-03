@@ -30,6 +30,8 @@ RUN npm ci --no-audit --no-fund 2>&1 \
 # ─── Stage 2: builder (prisma generate only — no Next.js build) ───────────────
 FROM node:22-slim AS builder
 WORKDIR /app
+# openssl needed by Prisma generate
+RUN apt-get update && apt-get install -y --no-install-recommends openssl ca-certificates && rm -rf /var/lib/apt/lists/*
 RUN npm install -g bun
 ENV DATABASE_URL="postgresql://placeholder:placeholder@localhost:5432/placeholder"
 COPY --from=deps /app/node_modules ./node_modules
@@ -49,6 +51,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       curl \
       ca-certificates \
       python3 \
+      openssl \
     && rm -rf /var/lib/apt/lists/*
 
 # Install bun (worker runs via `bun workers/format.ts`)
