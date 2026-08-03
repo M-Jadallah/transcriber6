@@ -37,6 +37,9 @@ RUN npm ci --no-audit --no-fund 2>&1 \
 FROM node:22-slim AS builder
 WORKDIR /app
 
+# openssl needed by Prisma generate (libssl detection)
+RUN apt-get update && apt-get install -y --no-install-recommends openssl ca-certificates && rm -rf /var/lib/apt/lists/*
+
 RUN npm install -g bun
 
 # Prisma generate needs a DATABASE_URL even though it doesn't connect
@@ -75,6 +78,7 @@ ENV BUN_IGNORE_SCRIPTS=true
 #   git           — required by some node native build steps + workers
 #   curl          — healthcheck
 #   ca-certificates — TLS
+#   openssl       — required by Prisma query engine (libssl detection)
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ffmpeg \
       python3 \
@@ -82,6 +86,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       git \
       curl \
       ca-certificates \
+      openssl \
     && pip3 install --no-cache-dir --break-system-packages yt-dlp \
     && rm -rf /var/lib/apt/lists/*
 
