@@ -1,9 +1,13 @@
 // yt-dlp integration — downloads audio from YouTube as MP3
-// Command for 64kbps mono MP3:
-//   yt-dlp -f "ba" -x --audio-format mp3 \
-//     --ppa "ExtractAudio+ffmpeg_o:-ac 1 -b:a 64k" \
-//     -o "%(id)s.%(ext)s" "URL"
-// The _o suffix on --ppa is CRITICAL (passes args to ffmpeg as OUTPUT args).
+// Optimized for PUBLIC videos (no cookies needed when Deno JS runtime is available).
+// Cookies are OPTIONAL — only for age-restricted / member-only / private videos.
+//
+// Key optimizations:
+//   - player_client=web,android (web first with JS challenge via Deno, android fallback)
+//   - --retries 10 + --fragment-retries 10 (automatic yt-dlp internal retries)
+//   - --print for reliable output path detection (no stderr parsing)
+//   - Format fallback chain: bestaudio/best → best
+//   - Player client fallback: web,android → android → web
 
 import { spawn, ChildProcess } from "child_process";
 import path from "path";
@@ -32,7 +36,7 @@ export interface PlaylistEntry {
   thumbnail?: string;
 }
 
-// Cookie-related error signatures (stderr substring match)
+// ─── Error classification ────────────────────────────────────────────────────
 // IMPORTANT: Be specific — "sign in" alone is too generic and catches
 // YouTube's IP-based rate limiting ("Sign in to confirm you're not a bot")
 // which is NOT a cookie problem (cookies won't help; IP rotation will).
@@ -93,13 +97,33 @@ export function isFormatError(stderr: string): boolean {
   );
 }
 
-// Download audio as MP3 with specified bitrate/channels. Returns output path.
+// Network/transient errors — retryable
+export function isNetworkError(stderr: string): boolean {
+  const lower = stderr.toLowerCase();
+  return (
+    lower.includes("connection reset") ||
+    lower.includes("connection refused") ||
+    lower.includes("timed out") ||
+    lower.includes("network is unreachable") ||
+    lower.includes("ssl: certificate_verification") ||
+    lower.includes("unable to download")
+  );
+}
+
+// ─── Download audio as MP3 ───────────────────────────────────────────────────
 export function downloadAudio(
   url: string,
   options: YtDlpAudioOptions,
   onProgress?: (p: YtDlpProgress) => void
 ): { process: ChildProcess; promise: Promise<string> } {
-  const { bitrate = 64, channels = "mono", cookiesPath, outputDir, format = "bestaudio/best", playerClient = "web,android" } = options;
+  const {
+    bitrate = 64,
+    channels = "mono",
+    cookiesPath,
+    outputDir,
+    format = "bestaudio/best",
+    playerClient = "web,android",
+  } = options;
   const ac = channels === "mono" ? "1" : "2";
   const outTemplate = path.join(outputDir, "%(id)s.%(ext)s");
 
@@ -116,9 +140,20 @@ export function downloadAudio(
     "--no-playlist",
     "--no-warnings",
     "--newline",
+    // ── Reliability flags ──
+    "--retries",
+    "10", // retry download fragments up to 10 times
+    "--fragment-retries",
+    "10", // retry each fragment 10 times
+    "--retry-sleep",
+    "5", // 5s between retries
+    // ── Progress reporting ──
     "--progress-template",
     "download:%(progress._percent_str)s|%(progress._speed_str)s|%(progress._eta_str)s",
-    // Use web client (with JS challenge support via Deno) first, android as fallback.
+    // ── Output file path (reliable — no stderr parsing needed) ──
+    "--print",
+    "after_move:%(filepath)s",
+    // ── Player client: web first (with JS challenge via Deno), android fallback ──
     // This allows downloading most public videos WITHOUT cookies.
     "--extractor-args",
     `youtube:player_client=${playerClient}`,
@@ -128,7 +163,7 @@ export function downloadAudio(
     args.push("--cookies", cookiesPath);
   }
 
-  // polite rate limiting
+  // Polite rate limiting (avoids YouTube IP bans)
   args.push("--sleep-requests", "1", "--sleep-interval", "1", "--max-sleep-interval", "3");
 
   args.push(url);
@@ -137,10 +172,12 @@ export function downloadAudio(
 
   const promise = new Promise<string>((resolve, reject) => {
     let stderrBuf = "";
+    let stdoutBuf = "";
     let lastProgress = 0;
 
     proc.stdout?.on("data", (chunk: Buffer) => {
       const text = chunk.toString();
+      stdoutBuf += text;
       for (const line of text.split("\n")) {
         if (line.startsWith("download:")) {
           const rest = line.slice("download:".length).trim();
@@ -161,21 +198,19 @@ export function downloadAudio(
 
     proc.on("close", (code) => {
       if (code === 0) {
-        // find the output file
-        // Expected: <outputDir>/<youtubeId>.mp3 — we parse it from stderr "Destination:" line
-        const destMatch = stderrBuf.match(/Destination:\s*(\S+\.mp3)/);
-        const audioPath = destMatch ? destMatch[1] : "";
-        if (audioPath) {
-          resolve(audioPath);
+        // Try to extract output path from --print output (most reliable)
+        const printLine = stdoutBuf
+          .split("\n")
+          .find((l) => l.trim() && !l.startsWith("download:") && !l.startsWith("[") && path.isAbsolute(l.trim()));
+
+        if (printLine) {
+          const audioPath = printLine.trim();
+          // Verify file exists
+          fs.access(audioPath)
+            .then(() => resolve(audioPath))
+            .catch(() => findAudioFile(outputDir, stderrBuf, resolve, reject));
         } else {
-          // fallback: list mp3 files in outputDir
-          fs.readdir(outputDir)
-            .then((files) => {
-              const mp3 = files.find((f) => f.endsWith(".mp3"));
-              if (mp3) resolve(path.join(outputDir, mp3));
-              else reject(new Error("Audio file not found after download. stderr: " + stderrBuf));
-            })
-            .catch(() => reject(new Error("Audio file not found. stderr: " + stderrBuf)));
+          findAudioFile(outputDir, stderrBuf, resolve, reject);
         }
       } else {
         reject(new YtDlpError(stderrBuf, code ?? 1));
@@ -188,6 +223,29 @@ export function downloadAudio(
   });
 
   return { process: proc, promise };
+}
+
+// Helper: find the audio file in outputDir (fallback when --print fails)
+function findAudioFile(
+  outputDir: string,
+  stderrBuf: string,
+  resolve: (path: string) => void,
+  reject: (err: Error) => void
+) {
+  // Try parsing "Destination:" from stderr
+  const destMatch = stderrBuf.match(/Destination:\s*(\S+\.mp3)/);
+  if (destMatch) {
+    resolve(destMatch[1]);
+    return;
+  }
+  // Fallback: list mp3 files in outputDir
+  fs.readdir(outputDir)
+    .then((files) => {
+      const mp3 = files.find((f) => f.endsWith(".mp3"));
+      if (mp3) resolve(path.join(outputDir, mp3));
+      else reject(new Error("Audio file not found after download. stderr: " + stderrBuf));
+    })
+    .catch(() => reject(new Error("Audio file not found. stderr: " + stderrBuf)));
 }
 
 export class YtDlpError extends Error {
@@ -211,14 +269,26 @@ export class YtDlpError extends Error {
   isRateLimit() {
     return isRateLimitError(this.stderr);
   }
+  isNetworkError() {
+    return isNetworkError(this.stderr);
+  }
 }
 
-// Fetch playlist metadata WITHOUT downloading
+// ─── Fetch playlist metadata WITHOUT downloading ────────────────────────────
 export async function fetchPlaylistInfo(
   playlistUrl: string,
   cookiesPath?: string
 ): Promise<{ title?: string; entries: PlaylistEntry[] }> {
-  const args = ["--flat-playlist", "-J", "--skip-download"];
+  const args = [
+    "--flat-playlist",
+    "-J",
+    "--skip-download",
+    // Use web client (with JS challenge support via Deno) for public playlists
+    "--extractor-args",
+    "youtube:player_client=web,android",
+    "--retries",
+    "5",
+  ];
   if (cookiesPath) args.push("--cookies", cookiesPath);
   args.push(playlistUrl);
 
@@ -257,12 +327,21 @@ export async function fetchPlaylistInfo(
   });
 }
 
-// Fetch single video metadata
+// ─── Fetch single video metadata ─────────────────────────────────────────────
 export async function fetchVideoInfo(
   videoUrl: string,
   cookiesPath?: string
 ): Promise<{ id: string; title: string; duration?: number; thumbnail?: string; url: string }> {
-  const args = ["-J", "--no-playlist", "--skip-download"];
+  const args = [
+    "-J",
+    "--no-playlist",
+    "--skip-download",
+    // Use web client (with JS challenge support via Deno) for public videos
+    "--extractor-args",
+    "youtube:player_client=web,android",
+    "--retries",
+    "5",
+  ];
   if (cookiesPath) args.push("--cookies", cookiesPath);
   args.push(videoUrl);
 
