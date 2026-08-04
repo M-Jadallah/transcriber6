@@ -79,6 +79,7 @@ ENV BUN_IGNORE_SCRIPTS=true
 #   curl          — healthcheck
 #   ca-certificates — TLS
 #   openssl       — required by Prisma query engine (libssl detection)
+#   unzip         — needed to install Deno
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ffmpeg \
       python3 \
@@ -87,8 +88,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       curl \
       ca-certificates \
       openssl \
+      unzip \
     && pip3 install --no-cache-dir --break-system-packages yt-dlp \
     && rm -rf /var/lib/apt/lists/*
+
+# Install Deno — REQUIRED by yt-dlp to solve YouTube's n-challenge JavaScript.
+# Without Deno, yt-dlp cannot download from YouTube (web client fails on JS puzzles).
+# Deno is installed to /usr/local/bin/deno (in PATH).
+RUN curl -fsSL https://deno.land/install.sh | sh -s v2.1.4 \
+    && mv /root/.deno/bin/deno /usr/local/bin/deno 2>/dev/null || true \
+    && deno --version
 
 # Install bun in runtime (workers run via bun)
 RUN npm install -g bun
