@@ -1,6 +1,8 @@
 import Redis from "ioredis";
 
 // Redis connection — graceful fallback when not available (dev sandbox)
+// IMPORTANT: maxRetriesPerRequest MUST be null for BullMQ compatibility.
+// BullMQ Workers use blocking commands (BRPOPLPUSH) that require unlimited retries.
 let _redis: Redis | null = null;
 let _redisAvailable = false;
 
@@ -12,18 +14,16 @@ const REDIS_URL =
 
 export async function getRedis(): Promise<Redis | null> {
   if (_redis) return _redis;
-  if (_redisAvailable === false && _redis === null) {
-    // first attempt
-  }
   try {
     const client = new Redis(REDIS_URL, {
-      maxRetriesPerRequest: 1,
+      maxRetriesPerRequest: null, // REQUIRED by BullMQ — must be null, not a number
       retryStrategy: (times) => {
-        if (times > 2) return null;
-        return Math.min(times * 200, 1000);
+        if (times > 10) return null; // give up after 10 retries
+        return Math.min(times * 200, 2000);
       },
       lazyConnect: false,
-      connectTimeout: 2000,
+      connectTimeout: 5000,
+      enableOfflineQueue: true, // queue commands while connecting
     });
     await client.ping();
     _redis = client;

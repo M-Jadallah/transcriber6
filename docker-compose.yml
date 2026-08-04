@@ -107,6 +107,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+    entrypoint: [""]
     command: ["bun", "workers/transcribe.ts"]
     restart: unless-stopped
     environment:
@@ -133,6 +134,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+    entrypoint: [""]
     command: ["bun", "workers/transcribe.ts"]
     restart: unless-stopped
     environment:
@@ -159,6 +161,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+    entrypoint: [""]
     command: ["bun", "workers/transcribe.ts"]
     restart: unless-stopped
     environment:
@@ -185,6 +188,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+    entrypoint: [""]
     command: ["bun", "workers/transcribe.ts"]
     restart: unless-stopped
     environment:
@@ -211,6 +215,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+    entrypoint: [""]
     command: ["bun", "workers/transcribe.ts"]
     restart: unless-stopped
     environment:
