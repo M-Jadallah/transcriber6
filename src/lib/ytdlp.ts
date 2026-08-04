@@ -14,6 +14,7 @@ export interface YtDlpAudioOptions {
   channels?: "mono" | "stereo"; // default mono
   cookiesPath?: string;
   outputDir: string;
+  format?: string; // yt-dlp format string, default "bestaudio/best"
 }
 
 export interface YtDlpProgress {
@@ -50,11 +51,29 @@ export function isCookieError(stderr: string): boolean {
 
 export function isVideoUnavailable(stderr: string): boolean {
   const lower = stderr.toLowerCase();
+  // IMPORTANT: "Requested format is not available" is a FORMAT error, NOT a
+  // video unavailable error. The video IS available, just the requested format
+  // isn't. So we check for specific video-unavailable signatures only.
   return (
     lower.includes("video unavailable") ||
-    lower.includes("removed") ||
+    lower.includes("video has been removed") ||
     lower.includes("does not exist") ||
-    lower.includes("not available")
+    lower.includes("private video") ||
+    lower.includes("members-only") ||
+    lower.includes("this video is not available") ||
+    lower.includes("account associated with this video has been terminated")
+  );
+}
+
+// Format-specific errors — the video IS available, but the requested format
+// isn't. Retrying with a broader format string (e.g. "bestaudio/best") will
+// usually succeed.
+export function isFormatError(stderr: string): boolean {
+  const lower = stderr.toLowerCase();
+  return (
+    lower.includes("requested format is not available") ||
+    lower.includes("no video formats found") ||
+    lower.includes("format not available")
   );
 }
 
@@ -64,13 +83,13 @@ export function downloadAudio(
   options: YtDlpAudioOptions,
   onProgress?: (p: YtDlpProgress) => void
 ): { process: ChildProcess; promise: Promise<string> } {
-  const { bitrate = 64, channels = "mono", cookiesPath, outputDir } = options;
+  const { bitrate = 64, channels = "mono", cookiesPath, outputDir, format = "bestaudio/best" } = options;
   const ac = channels === "mono" ? "1" : "2";
   const outTemplate = path.join(outputDir, "%(id)s.%(ext)s");
 
   const args = [
     "-f",
-    "ba",
+    format,
     "-x",
     "--audio-format",
     "mp3",
@@ -165,6 +184,9 @@ export class YtDlpError extends Error {
   }
   isVideoUnavailable() {
     return isVideoUnavailable(this.stderr);
+  }
+  isFormatError() {
+    return isFormatError(this.stderr);
   }
 }
 
