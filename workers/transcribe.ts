@@ -292,38 +292,69 @@ async function runTranscriptionPipeline(video: {
     return promise;
   };
 
-  if (cookies.length === 0) {
-    // No cookies configured — try once without
-    logger.warn("No active cookies configured — downloading without cookies", {
+  // ═══ NEW STRATEGY ════════════════════════════════════════════════════════
+  // Strategy: Try WITHOUT cookies first (web client + Deno JS runtime solves
+  // YouTube's n-challenge). Most public videos download successfully this way.
+  // Only fall back to cookies for age-restricted / member-only / private videos.
+  // ════════════════════════════════════════════════════════════════════════
+
+  // ── Step 1: Try WITHOUT cookies (web client with JS challenge support) ──
+  logger.info("Attempting download WITHOUT cookies (web client + JS runtime)", {
+    source: "transcription",
+    workerId: WORKER_ID,
+    videoId,
+  });
+
+  try {
+    audioPath = await tryDownload();
+    logger.info("Download succeeded without cookies", {
       source: "transcription",
       workerId: WORKER_ID,
       videoId,
     });
-    try {
-      audioPath = await tryDownload();
-    } catch (err) {
-      lastErr = err;
-      if (err instanceof YtDlpError && err.isVideoUnavailable()) {
-        throw new Error(`Video unavailable: ${truncate(err.stderr, 200)}`);
-      }
-      if (err instanceof YtDlpError && err.isFormatError()) {
-        // Format error — retry once with a broader format string
-        logger.warn("Format error — retrying with fallback format", {
-          source: "transcription",
-          workerId: WORKER_ID,
-          videoId,
-        });
-        try {
-          audioPath = await tryDownloadWithFallback();
-        } catch (err2) {
-          lastErr = err2;
-          if (err2 instanceof YtDlpError && err2.isVideoUnavailable()) {
-            throw new Error(`Video unavailable: ${truncate(err2.stderr, 200)}`);
-          }
+  } catch (err) {
+    lastErr = err;
+
+    // If video is truly unavailable, fail immediately (no point trying cookies)
+    if (err instanceof YtDlpError && err.isVideoUnavailable()) {
+      throw new Error(`Video unavailable: ${truncate(err.stderr, 200)}`);
+    }
+
+    // If format error, retry with broader format (still no cookies)
+    if (err instanceof YtDlpError && err.isFormatError()) {
+      logger.warn("Format error — retrying with fallback format 'best'", {
+        source: "transcription",
+        workerId: WORKER_ID,
+        videoId,
+      });
+      try {
+        audioPath = await tryDownloadWithFallback();
+      } catch (err2) {
+        lastErr = err2;
+        if (err2 instanceof YtDlpError && err2.isVideoUnavailable()) {
+          throw new Error(`Video unavailable: ${truncate(err2.stderr, 200)}`);
         }
       }
     }
-  } else {
+
+    // If rate-limited, fail with clear message (cookies won't help)
+    if (err instanceof YtDlpError && err.isRateLimit()) {
+      throw new Error(
+        `YouTube rate limit — wait a few minutes or use a different IP. ` +
+        `Cookies will NOT fix this: ${truncate(err.stderr, 150)}`
+      );
+    }
+  }
+
+  // ── Step 2: If no-cookies attempt failed, try WITH cookies (if configured) ──
+  if (!audioPath && cookies.length > 0) {
+    logger.warn("Download without cookies failed — trying with cookies", {
+      source: "transcription",
+      workerId: WORKER_ID,
+      videoId,
+      details: { lastError: lastErr ? truncate((lastErr as Error).message, 100) : "unknown" },
+    });
+
     for (const cookie of cookies) {
       const cookiePath = path.join(os.tmpdir(), `cookie-${cookie.id}.txt`);
       try {
@@ -347,18 +378,24 @@ async function runTranscriptionPipeline(video: {
             data: { lastUsedAt: new Date(), lastError: null },
           })
           .catch(() => {});
+        logger.info(`Download succeeded with cookie ${cookie.filename}`, {
+          source: "transcription",
+          workerId: WORKER_ID,
+          videoId,
+        });
         break;
       } catch (err) {
         lastErr = err;
         if (err instanceof YtDlpError) {
           if (err.isVideoUnavailable()) {
-            await db.cookie
-              .update({
-                where: { id: cookie.id },
-                data: { lastError: "Video unavailable" },
-              })
-              .catch(() => {});
             throw new Error(`Video unavailable: ${truncate(err.stderr, 200)}`);
+          }
+          if (err.isRateLimit()) {
+            // Rate limit affects ALL cookies — stop trying
+            throw new Error(
+              `YouTube rate limit — wait a few minutes or use a different IP. ` +
+              `Cookies will NOT fix this: ${truncate(err.stderr, 150)}`
+            );
           }
           if (err.isCookieRelated()) {
             await db.cookie
@@ -375,7 +412,6 @@ async function runTranscriptionPipeline(video: {
             continue;
           }
           if (err.isFormatError()) {
-            // Format error — retry with broader format string
             logger.warn(`Format error with ${cookie.filename} — retrying with fallback format`, {
               source: "transcription",
               workerId: WORKER_ID,
@@ -396,12 +432,10 @@ async function runTranscriptionPipeline(video: {
               if (err2 instanceof YtDlpError && err2.isVideoUnavailable()) {
                 throw new Error(`Video unavailable: ${truncate(err2.stderr, 200)}`);
               }
-              // If fallback also fails, try next cookie
               continue;
             }
           }
         }
-        // Other error — try the next cookie as a best effort.
         logger.error(`Download error with cookie ${cookie.filename}`, {
           source: "transcription",
           workerId: WORKER_ID,
@@ -416,9 +450,8 @@ async function runTranscriptionPipeline(video: {
 
     if (!audioPath) {
       throw new Error(
-        `All cookies failed — please update cookies in settings${
-          lastErr ? `: ${truncate((lastErr as Error).message, 200)}` : ""
-        }`
+        `All download attempts failed (no-cookies + ${cookies.length} cookies). ` +
+        `Last error: ${lastErr ? truncate((lastErr as Error).message, 200) : "unknown"}`
       );
     }
   }

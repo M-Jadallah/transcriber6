@@ -15,6 +15,7 @@ export interface YtDlpAudioOptions {
   cookiesPath?: string;
   outputDir: string;
   format?: string; // yt-dlp format string, default "bestaudio/best"
+  playerClient?: string; // youtube player_client, default "web,android"
 }
 
 export interface YtDlpProgress {
@@ -32,21 +33,36 @@ export interface PlaylistEntry {
 }
 
 // Cookie-related error signatures (stderr substring match)
+// IMPORTANT: Be specific — "sign in" alone is too generic and catches
+// YouTube's IP-based rate limiting ("Sign in to confirm you're not a bot")
+// which is NOT a cookie problem (cookies won't help; IP rotation will).
 const COOKIE_ERROR_SIGNATURES = [
-  "sign in to confirm",
+  "sign in to confirm your age",
   "age restricted",
   "members-only",
   "members only",
-  "private video",
   "this video is private",
-  "cookies.txt does not look like a Netscape format",
-  "login required",
-  "sign in",
+  "private video",
+  "cookies.txt does not look like a netscape format",
+  "login required to view this video",
+  "this video requires age verification",
 ];
 
 export function isCookieError(stderr: string): boolean {
   const lower = stderr.toLowerCase();
   return COOKIE_ERROR_SIGNATURES.some((sig) => lower.includes(sig));
+}
+
+// IP-based rate limiting — NOT a cookie problem. Cookies won't help.
+// The only fix is to wait or use a different IP (proxy/VPN).
+export function isRateLimitError(stderr: string): boolean {
+  const lower = stderr.toLowerCase();
+  return (
+    lower.includes("sign in to confirm you") ||
+    lower.includes("you are being rate limited") ||
+    lower.includes("too many requests") ||
+    lower.includes("http error 429")
+  );
 }
 
 export function isVideoUnavailable(stderr: string): boolean {
@@ -83,7 +99,7 @@ export function downloadAudio(
   options: YtDlpAudioOptions,
   onProgress?: (p: YtDlpProgress) => void
 ): { process: ChildProcess; promise: Promise<string> } {
-  const { bitrate = 64, channels = "mono", cookiesPath, outputDir, format = "bestaudio/best" } = options;
+  const { bitrate = 64, channels = "mono", cookiesPath, outputDir, format = "bestaudio/best", playerClient = "web,android" } = options;
   const ac = channels === "mono" ? "1" : "2";
   const outTemplate = path.join(outputDir, "%(id)s.%(ext)s");
 
@@ -102,6 +118,10 @@ export function downloadAudio(
     "--newline",
     "--progress-template",
     "download:%(progress._percent_str)s|%(progress._speed_str)s|%(progress._eta_str)s",
+    // Use web client (with JS challenge support via Deno) first, android as fallback.
+    // This allows downloading most public videos WITHOUT cookies.
+    "--extractor-args",
+    `youtube:player_client=${playerClient}`,
   ];
 
   if (cookiesPath) {
@@ -187,6 +207,9 @@ export class YtDlpError extends Error {
   }
   isFormatError() {
     return isFormatError(this.stderr);
+  }
+  isRateLimit() {
+    return isRateLimitError(this.stderr);
   }
 }
 
