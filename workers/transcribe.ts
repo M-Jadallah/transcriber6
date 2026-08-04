@@ -271,6 +271,27 @@ async function runTranscriptionPipeline(video: {
     return promise;
   };
 
+  // Fallback download with the most generic format string ("best")
+  // Used when the default "bestaudio/best" fails with a format error.
+  const tryDownloadWithFallback = async (cookiesPath?: string): Promise<string> => {
+    const { promise } = downloadAudio(
+      video.url,
+      {
+        bitrate: audioSettings.bitrate,
+        channels: audioSettings.channels,
+        cookiesPath,
+        outputDir: AUDIO_DIR,
+        format: "best",  // most generic — accepts any available format
+      },
+      (p) => {
+        const mapped = 5 + Math.floor((p.percent / 100) * 45);
+        const statusText = `تنزيل ${Math.floor(p.percent)}%`;
+        updateProgress(videoId, mapped, "downloading", statusText).catch(() => {});
+      }
+    );
+    return promise;
+  };
+
   if (cookies.length === 0) {
     // No cookies configured — try once without
     logger.warn("No active cookies configured — downloading without cookies", {
@@ -284,6 +305,22 @@ async function runTranscriptionPipeline(video: {
       lastErr = err;
       if (err instanceof YtDlpError && err.isVideoUnavailable()) {
         throw new Error(`Video unavailable: ${truncate(err.stderr, 200)}`);
+      }
+      if (err instanceof YtDlpError && err.isFormatError()) {
+        // Format error — retry once with a broader format string
+        logger.warn("Format error — retrying with fallback format", {
+          source: "transcription",
+          workerId: WORKER_ID,
+          videoId,
+        });
+        try {
+          audioPath = await tryDownloadWithFallback();
+        } catch (err2) {
+          lastErr = err2;
+          if (err2 instanceof YtDlpError && err2.isVideoUnavailable()) {
+            throw new Error(`Video unavailable: ${truncate(err2.stderr, 200)}`);
+          }
+        }
       }
     }
   } else {
@@ -336,6 +373,32 @@ async function runTranscriptionPipeline(video: {
               videoId,
             });
             continue;
+          }
+          if (err.isFormatError()) {
+            // Format error — retry with broader format string
+            logger.warn(`Format error with ${cookie.filename} — retrying with fallback format`, {
+              source: "transcription",
+              workerId: WORKER_ID,
+              videoId,
+            });
+            try {
+              audioPath = await tryDownloadWithFallback(cookiePath);
+              cookieUsedId = cookie.id;
+              await db.cookie
+                .update({
+                  where: { id: cookie.id },
+                  data: { lastUsedAt: new Date(), lastError: null },
+                })
+                .catch(() => {});
+              break;
+            } catch (err2) {
+              lastErr = err2;
+              if (err2 instanceof YtDlpError && err2.isVideoUnavailable()) {
+                throw new Error(`Video unavailable: ${truncate(err2.stderr, 200)}`);
+              }
+              // If fallback also fails, try next cookie
+              continue;
+            }
           }
         }
         // Other error — try the next cookie as a best effort.
